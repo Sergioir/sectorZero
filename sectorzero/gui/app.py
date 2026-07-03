@@ -19,6 +19,7 @@ import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, simpledialog
+import tkinter.simpledialog as tk_simpledialog
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -729,131 +730,116 @@ class AppSectorZero(tk.Tk):
         return messagebox.askyesno(titulo, mensaje, icon=icon)
 
     def _op_nueva_tabla(self):
-        if not self._disco_actual:
+        if not self._resultado_actual or not self._resultado_actual.disco:
             return
-        tipo = simpledialog.askstring(
-            "Nueva tabla de particiones",
-            "Tipo:\n  gpt  — recomendado (>2TB, UEFI)\n  msdos — MBR clásico\n\nEscribe 'gpt' o 'msdos':",
+        tipo = tk.simpledialog.askstring(
+            "Nueva tabla", "Tipo: 'gpt' (recomendado) o 'msdos' (MBR clásico):",
             initialvalue="gpt",
         )
         if not tipo or tipo.lower() not in ("gpt", "msdos"):
             return
-        if not self._confirmar(
-            "⚠ Crear tabla nueva",
-            f"Crear tabla {tipo.upper()} en {self._disco_actual}.\n\n"
-            f"⚠ DESTRUCTIVO: borrará TODAS las particiones existentes.\n\n"
-            f"¿Confirmas?", destructivo=True
-        ):
-            return
-        if not self._confirmar(
-            "⚠ CONFIRMACIÓN FINAL",
-            f"Última oportunidad.\n"
-            f"Se creará una tabla {tipo.upper()} vacía en {self._disco_actual}.\n"
-            f"Todos los datos y particiones actuales se perderán.\n\n"
-            f"¿Continuar?", destructivo=True
-        ):
-            self._log.escribir("Operación cancelada.", "gris")
-            return
-        self._log.escribir(f"Creando tabla {tipo.upper()} en {self._disco_actual}...", "aviso")
-        self._lanzar_worker(self._worker_op_parted,
-                             f"parted -s {self._disco_actual} mklabel {tipo.lower()}")
+        from sectorzero.core.simulacion import simular_crear_tabla
+        from sectorzero.gui.ventana_simulacion import VentanaSimulacion
+        sim = simular_crear_tabla(self._resultado_actual, tipo.lower())
+        VentanaSimulacion(self, sim, on_confirmar=self._ejecutar_operacion)
 
     def _op_nueva_particion(self):
         if not self._resultado_actual or not self._resultado_actual.disco:
             return
         disco_mb = self._resultado_actual.disco.tamaño_bytes / 1e6
-        inicio = simpledialog.askfloat(
+        inicio = tk.simpledialog.askfloat(
             "Nueva partición — Inicio (MB)",
-            f"Disco total: {self._resultado_actual.disco.tamaño_gb:.1f} GB\n"
-            f"Inicio de la nueva partición (en MB):",
+            f"Disco: {self._resultado_actual.disco.tamaño_gb:.1f}GB\n"
+            f"Inicio (MB, 1-{disco_mb:.0f}):",
             minvalue=1, maxvalue=disco_mb,
         )
         if inicio is None:
             return
-        fin = simpledialog.askfloat(
+        fin = tk.simpledialog.askfloat(
             "Nueva partición — Fin (MB)",
-            f"Fin de la nueva partición (en MB, máx {disco_mb:.0f}):",
+            f"Fin (MB, {inicio:.0f}-{disco_mb:.0f}):",
             minvalue=inicio + 1, maxvalue=disco_mb,
         )
         if fin is None:
             return
-        fs = simpledialog.askstring(
-            "Nueva partición — Sistema de archivos",
+        fs = tk.simpledialog.askstring(
+            "Sistema de archivos",
             "fat32 / exfat / ntfs / ext4 / linux-swap:",
             initialvalue="fat32",
         )
         if not fs:
             return
-        tamaño = fin - inicio
-        if not self._confirmar(
-            "Crear partición",
-            f"Crear partición {fs.upper()} de {tamaño:.0f} MB\n"
-            f"({inicio:.0f}M - {fin:.0f}M) en {self._disco_actual}.\n\n¿Confirmas?"
-        ):
-            return
-        cmd = (f"parted -s {self._disco_actual} unit MB "
-               f"mkpart primary {fs.lower()} {inicio:.2f} {fin:.2f}")
-        self._log.escribir(f"Creando partición {fs.upper()} {tamaño:.0f}MB...", "aviso")
-        self._lanzar_worker(self._worker_op_parted, cmd)
+        from sectorzero.core.simulacion import simular_crear_particion
+        from sectorzero.gui.ventana_simulacion import VentanaSimulacion
+        sim = simular_crear_particion(
+            self._resultado_actual, inicio, fin, fs.lower())
+        VentanaSimulacion(self, sim, on_confirmar=self._ejecutar_operacion)
 
     def _op_eliminar(self):
         if not self._particion_seleccionada or self._particion_seleccionada.es_libre:
-            self._log.escribir("Selecciona primero una partición en la tabla.", "aviso")
+            self._log.escribir("Selecciona primero una partición.", "aviso")
             return
-        p = self._particion_seleccionada
-        if not self._confirmar(
-            "⚠ Eliminar partición",
-            f"Eliminar partición #{p.numero} ({p.filesystem.upper()}, {p.tamaño_gb:.2f} GB).\n"
-            f"⚠ Los datos se perderán.\n\n¿Confirmas?", destructivo=True
-        ):
-            return
-        if not self._confirmar(
-            "⚠ CONFIRMACIÓN FINAL",
-            f"Eliminar #{p.numero} — {p.tamaño_gb:.2f} GB de {p.filesystem.upper()}.\n"
-            f"Esta acción es IRREVERSIBLE.\n\n¿Continuar?", destructivo=True
-        ):
-            self._log.escribir("Eliminación cancelada.", "gris")
-            return
-        cmd = f"parted -s {self._disco_actual} rm {p.numero}"
-        self._log.escribir(f"Eliminando partición #{p.numero}...", "aviso")
-        self._lanzar_worker(self._worker_op_parted, cmd)
+        from sectorzero.core.simulacion import simular_eliminar_particion
+        from sectorzero.gui.ventana_simulacion import VentanaSimulacion
+        sim = simular_eliminar_particion(
+            self._resultado_actual, self._particion_seleccionada.numero)
+        VentanaSimulacion(self, sim, on_confirmar=self._ejecutar_operacion)
 
     def _op_flag(self):
         if not self._particion_seleccionada or self._particion_seleccionada.es_libre:
             self._log.escribir("Selecciona primero una partición.", "aviso")
             return
         p = self._particion_seleccionada
-        flag = simpledialog.askstring(
-            "Cambiar flag",
-            f"Partición #{p.numero}\nFlag (boot / lba / esp / hidden):",
-            initialvalue="boot",
-        )
+        flag = tk.simpledialog.askstring(
+            "Flag", "boot / lba / esp / hidden:", initialvalue="boot")
         if not flag:
             return
         activar = messagebox.askyesno(
-            "Cambiar flag",
-            f"¿Activar flag '{flag}' en partición #{p.numero}?\n(No = desactivar)"
-        )
-        estado = "on" if activar else "off"
-        cmd = f"parted -s {self._disco_actual} set {p.numero} {flag.lower()} {estado}"
-        self._log.escribir(f"{'Activando' if activar else 'Desactivando'} flag {flag}...", "aviso")
-        self._lanzar_worker(self._worker_op_parted, cmd)
+            "Flag", f"¿Activar '{flag}' en #{p.numero}?\n(No = desactivar)")
+        from sectorzero.core.simulacion import simular_cambiar_flag
+        from sectorzero.gui.ventana_simulacion import VentanaSimulacion
+        sim = simular_cambiar_flag(
+            self._resultado_actual, p.numero, flag.lower(), activar)
+        VentanaSimulacion(self, sim, on_confirmar=self._ejecutar_operacion)
 
     def _op_reparar_mbr(self):
         if not self._disco_actual:
             return
-        if not self._confirmar(
+        if not messagebox.askyesno(
             "Reparar MBR",
-            f"Restaurar la firma 0x55AA en el sector 0 de {self._disco_actual}.\n\n"
-            f"Esto no toca los datos ni la tabla de particiones, solo el sector de arranque.\n\n"
-            f"¿Confirmas?"
+            f"Restaurar firma 0x55AA en sector 0 de {self._disco_actual}.\n"
+            f"No toca datos ni particiones, solo el sector de arranque.\n\n¿Confirmas?"
+        ):
+            return
+        if not messagebox.askyesno(
+            "Segunda confirmación",
+            "¿Ejecutar definitivamente la reparación del MBR?"
         ):
             return
         self._log.escribir("Restaurando firma MBR (0x55AA)...", "aviso")
-        # Escribir 0x55AA en offset 510 del MBR
-        cmd = (f"bash -c 'printf \"\\x55\\xAA\" | "
-               f"dd of={self._disco_actual} bs=1 seek=510 count=2 conv=notrunc 2>&1'")
+        cmd = f"dd if=/dev/zero of={self._disco_actual} bs=1 count=2 seek=510 conv=notrunc && printf '\\x55\\xAA' | dd of={self._disco_actual} bs=1 seek=510 conv=notrunc"
         self._lanzar_worker(self._worker_op_bash, cmd)
+
+    def _ejecutar_operacion(self, sim):
+        """Callback que recibe la simulación confirmada y ejecuta el comando real."""
+        from sectorzero.core.disco import leer_disco
+        self._log.escribir(f"Ejecutando: {sim.comando_parted}", "aviso")
+
+        def _worker(cola):
+            try:
+                from sectorzero.core.wsl_utils import ejecutar_en_wsl
+                partes = sim.comando_parted.split()
+                proc = ejecutar_en_wsl(partes, distro=self._distro, timeout=30)
+                salida = (proc.stdout + proc.stderr).strip()
+                if proc.returncode == 0:
+                    cola.put(_evento("operacion_ok",
+                                      mensaje=f"✓ {sim.descripcion}"))
+                else:
+                    cola.put(_evento("operacion_error", mensaje=salida))
+            except Exception as e:
+                cola.put(_evento("operacion_error", mensaje=str(e)))
+
+        self._lanzar_worker(_worker)
 
     def _worker_op_parted(self, cola, cmd_str):
         """Ejecuta un comando de parted y recarga el disco."""
