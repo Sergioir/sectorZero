@@ -309,3 +309,49 @@ def detach(busid: str) -> tuple[bool, str]:
         return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
     except Exception as e:
         return False, str(e)
+
+
+def obtener_letra_unidad(vidpid: str) -> list[str]:
+    """Obtiene las letras de unidad Windows de un disco identificado por VID:PID.
+    
+    Flujo:
+      1. Get-PnpDevice → número de disco físico por VID:PID
+      2. Get-Partition -DiskNumber N → letras de unidad
+    
+    Devuelve lista de letras (ej: ['D', 'E']) o [] si no se encuentra.
+    """
+    import subprocess, json, re
+    try:
+        vid, pid = vidpid.upper().split(":")
+        # Paso 1: encontrar el número de disco físico
+        script = (
+            f"$dev = Get-PnpDevice -Class DiskDrive | "
+            f"Where-Object {{$_.DeviceID -like '*VID_{vid}*PID_{pid}*'}} | "
+            f"Select-Object -First 1; "
+            f"if ($dev) {{"
+            f"  $disk = Get-Disk | Where-Object {{$_.SerialNumber -ne $null}} | "
+            f"  Where-Object {{(Get-Partition -DiskNumber $_.Number -ErrorAction SilentlyContinue) -ne $null}};"
+            f"  $diskNum = (Get-WmiObject Win32_DiskDrive | "
+            f"  Where-Object {{$_.PNPDeviceID -like '*VID_{vid}*PID_{pid}*'}} | "
+            f"  Select-Object -First 1).Index;"
+            f"  if ($diskNum -ne $null) {{"
+            f"    Get-Partition -DiskNumber $diskNum -ErrorAction SilentlyContinue | "
+            f"    Where-Object {{$_.DriveLetter}} | "
+            f"    Select-Object DriveLetter | ConvertTo-Json"
+            f"  }}"
+            f"}}"
+        )
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=15, creationflags=_NO_WINDOW,
+        )
+        if not proc.stdout.strip():
+            return []
+        datos = json.loads(proc.stdout.strip())
+        if isinstance(datos, dict):
+            datos = [datos]
+        return [str(d.get("DriveLetter", "")).strip()
+                for d in datos if d.get("DriveLetter")]
+    except Exception:
+        return []

@@ -73,20 +73,27 @@ class VentanaSimulacion(tk.Toplevel):
     """
 
     def __init__(self, parent, simulacion: ResultadoSimulacion,
-                 on_confirmar: Optional[Callable] = None, **kwargs):
+                 on_confirmar: Optional[Callable] = None,
+                 vidpid: str = "", **kwargs):
         super().__init__(parent, **kwargs)
         self._sim = simulacion
         self._on_confirmar = on_confirmar
+        self._vidpid = vidpid
         self._ejecutando = False
+        self._letras_unidad: list[str] = []  # se resuelven en background
 
         self.title("⚠ Simulación de operación — SectorZero")
         self.configure(bg=BG_OSCURO)
-        self.geometry("900x620")
-        self.minsize(750, 500)
+        self.geometry("900x680")
+        self.minsize(750, 520)
         self.resizable(True, True)
-        self.grab_set()  # modal — bloquea la ventana principal
+        self.grab_set()
 
         self._construir()
+
+        # Resolver letras de unidad Windows en background si es redimensionado
+        if self._vidpid and "resizepart" in simulacion.comando_parted:
+            threading.Thread(target=self._resolver_letras, daemon=True).start()
 
     def _construir(self):
         # Cabecera
@@ -126,6 +133,10 @@ class VentanaSimulacion(tk.Toplevel):
                           bg="#1a1a00", fg=AMARILLO, font=MONO_SM,
                           wraplength=860, justify=tk.LEFT, anchor="w").pack(
                     fill=tk.X, padx=PAD_SM, pady=1)
+
+        # Aviso especial de desfrag para operaciones de redimensionado
+        if "resizepart" in self._sim.comando_parted and "Reducir" in self._sim.descripcion:
+            self._construir_aviso_defrag()
 
         if not self._sim.posible:
             frame_err = tk.Frame(self, bg="#2a0000")
@@ -178,6 +189,98 @@ class VentanaSimulacion(tk.Toplevel):
                      comando=self._primera_confirmacion,
                      color=color_btn, ancho=280).pack(
                 side=tk.RIGHT, padx=PAD_SM, pady=PAD_SM)
+
+    def _resolver_letras(self):
+        """Resuelve las letras de unidad Windows en background y actualiza el comando."""
+        try:
+            from sectorzero.core.usbipd_utils import obtener_letra_unidad
+            letras = obtener_letra_unidad(self._vidpid)
+            if letras:
+                self._letras_unidad = letras
+                # Actualizar el comando de defrag en la UI desde el hilo principal
+                self.after(0, self._actualizar_cmd_defrag)
+        except Exception:
+            pass
+
+    def _actualizar_cmd_defrag(self):
+        """Actualiza el widget del comando de defrag con la letra real."""
+        if not self._letras_unidad or not hasattr(self, "_caja_defrag"):
+            return
+        letra = self._letras_unidad[0]
+        cmd = f"Optimize-Volume -DriveLetter {letra} -Defrag -Verbose"
+        self._caja_defrag.configure(state=tk.NORMAL)
+        self._caja_defrag.delete("1.0", tk.END)
+        self._caja_defrag.insert("1.0", cmd)
+        self._caja_defrag.configure(state=tk.DISABLED)
+        # Actualizar el botón
+        if hasattr(self, "_btn_defrag_cmd"):
+            self._btn_defrag_cmd = cmd
+
+    def _construir_aviso_defrag(self):
+        """Aviso de desfragmentación previa para operaciones de reducción."""
+        frame = tk.Frame(self, bg="#0a1a0a",
+                          relief=tk.FLAT,
+                          highlightbackground=VERDE,
+                          highlightthickness=1)
+        frame.pack(fill=tk.X, padx=PAD, pady=(0, PAD_SM))
+
+        tk.Label(frame,
+                  text="📋 PASO PREVIO RECOMENDADO — Desfragmentar en Windows",
+                  bg="#0a1a0a", fg=VERDE, font=MONO_SM).pack(
+            anchor="w", padx=PAD_SM, pady=(PAD_SM, 2))
+
+        tk.Label(frame,
+                  text="Antes de reducir una partición, desfragmenta el disco en Windows\n"
+                       "para consolidar los datos al principio y dejar el final vacío.",
+                  bg="#0a1a0a", fg=TEXTO, font=MONO_SM,
+                  justify=tk.LEFT, anchor="w").pack(
+            fill=tk.X, padx=PAD_SM, pady=(0, PAD_SM))
+
+        frame_cmd = tk.Frame(frame, bg="#050f05")
+        frame_cmd.pack(fill=tk.X, padx=PAD_SM, pady=(0, PAD_SM))
+
+        # Comando inicial — se actualizará cuando se resuelva la letra
+        cmd_inicial = "Optimize-Volume -DriveLetter D -Defrag -Verbose"
+        if self._letras_unidad:
+            cmd_inicial = f"Optimize-Volume -DriveLetter {self._letras_unidad[0]} -Defrag -Verbose"
+
+        lbl_nota = tk.Label(frame_cmd,
+                  text="Detectando letra de unidad..." if not self._letras_unidad
+                       else f"Unidad detectada: {self._letras_unidad[0]}:",
+                  bg="#050f05", fg=GRIS, font=MONO_SM)
+        lbl_nota.pack(anchor="w", padx=PAD_SM, pady=(PAD_SM, 0))
+
+        self._caja_defrag = tk.Text(frame_cmd, height=1, bg=BG_PANEL, fg=VERDE,
+                        font=MONO, relief=tk.FLAT, padx=8, pady=4,
+                        wrap=tk.NONE, state=tk.NORMAL)
+        self._caja_defrag.insert("1.0", cmd_inicial)
+        self._caja_defrag.configure(state=tk.DISABLED)
+        self._caja_defrag.pack(fill=tk.X, padx=PAD_SM, pady=PAD_SM)
+
+        self._btn_defrag_cmd = cmd_inicial
+
+        from sectorzero.gui.app import BotonSZ
+
+        def _abrir_defrag():
+            import subprocess, platform
+            cmd = self._btn_defrag_cmd
+            if platform.system() == "Windows":
+                subprocess.Popen(
+                    ["powershell.exe", "-NoExit", "-Command", cmd],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
+
+        frame_btn = tk.Frame(frame, bg="#0a1a0a")
+        frame_btn.pack(fill=tk.X, padx=PAD_SM, pady=(0, PAD_SM))
+
+        BotonSZ(frame_btn, "▶ Abrir PowerShell y desfragmentar",
+                 comando=_abrir_defrag,
+                 color=VERDE, ancho=280).pack(side=tk.LEFT)
+
+        tk.Label(frame_btn,
+                  text="  Espera a que termine antes de ejecutar el redimensionado.",
+                  bg="#0a1a0a", fg=GRIS, font=MONO_SM).pack(
+            side=tk.LEFT, padx=PAD_SM)
 
     def _construir_tabla(self, parent, titulo: str,
                           lineas: list[LineaSimulacion], col: int):

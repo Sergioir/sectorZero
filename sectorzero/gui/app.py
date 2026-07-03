@@ -663,6 +663,7 @@ class AppSectorZero(tk.Tk):
         es_usb = (info_disco_sel.get("removible", False) or
                    info_disco_sel.get("transport", "") == "usb")
         self._disco_es_usb = es_usb
+        self._disco_vidpid = info_disco_sel.get("vidpid", "")
 
         if es_usb:
             for btn in [self._btn_nueva_tabla, self._btn_nueva_part,
@@ -957,7 +958,9 @@ class AppSectorZero(tk.Tk):
         from sectorzero.gui.ventana_simulacion import VentanaSimulacion
         sim = simular_redimensionar_particion(
             self._resultado_actual, p.numero, nuevo_fin)
-        VentanaSimulacion(self, sim, on_confirmar=self._ejecutar_operacion)
+        VentanaSimulacion(self, sim,
+                          on_confirmar=self._ejecutar_operacion,
+                          vidpid=getattr(self, "_disco_vidpid", ""))
         """Callback que recibe la simulación confirmada y ejecuta el comando real."""
         from sectorzero.core.disco import leer_disco
         self._log.escribir(f"Ejecutando: {sim.comando_parted}", "aviso")
