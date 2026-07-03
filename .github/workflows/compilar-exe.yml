@@ -1,0 +1,96 @@
+name: Compilar y publicar SectorZero.exe
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  compilar-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar PyInstaller
+        run: pip install pyinstaller
+
+      - name: Compilar SectorZero.exe
+        run: pyinstaller --clean sector_zero.spec
+
+      - name: Verificar .exe
+        run: |
+          if (Test-Path "dist\SectorZero.exe") {
+            $size = (Get-Item "dist\SectorZero.exe").Length / 1MB
+            Write-Host "SectorZero.exe generado: $([math]::Round($size, 1)) MB"
+          } else {
+            Write-Host "ERROR: SectorZero.exe no existe"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Calcular SHA-256
+        id: sha256
+        run: |
+          $hash = (Get-FileHash "dist\SectorZero.exe" -Algorithm SHA256).Hash.ToLower()
+          Write-Host "SHA-256: $hash"
+          echo "hash=$hash" >> $env:GITHUB_OUTPUT
+          echo "SHA-256: $hash" > dist\SectorZero.exe.sha256.txt
+        shell: pwsh
+
+      - name: Crear Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "SectorZero ${{ github.ref_name }}"
+          body: |
+            ## SectorZero ${{ github.ref_name }} — BETA
+
+            > ⚠ **VERSIÓN BETA — SIN PRUEBAS EN PRODUCCIÓN**
+            > Las operaciones de escritura (crear tabla, crear/eliminar particiones)
+            > NO han sido validadas en casos reales todavía. Úsalas exclusivamente
+            > en pendrives o discos de prueba, nunca en discos con datos importantes.
+            > Los discos internos del sistema están protegidos en modo solo lectura.
+
+            ### Instalación
+            1. Descarga `SectorZero.exe`
+            2. Ejecútalo — pedirá permisos de administrador
+            3. El asistente guía la instalación de WSL2, Kali Linux y parted
+
+            ### Qué hace esta versión
+            - Visualiza la tabla de particiones (MBR y GPT) con barra proporcional
+            - Muestra el estado del sector de arranque (firma MBR 0x55AA)
+            - Detecta automáticamente discos USB externos vs discos internos
+            - **Discos internos**: solo lectura — puedes ver la tabla, no modificarla
+            - **Discos USB externos**: operaciones habilitadas con doble confirmación
+            - Conecta dispositivos USB a WSL via usbipd desde la propia interfaz
+            - Operaciones disponibles (solo en USB): nueva tabla, nueva partición,
+              eliminar partición, cambiar flags, reparar firma MBR
+
+            ### Requiere
+            - Windows 10 v2004+ / Windows 11
+            - WSL2 + Kali Linux (el asistente los instala)
+            - parted y gdisk en Kali (el asistente los instala)
+
+            ### Verificación de integridad
+            SHA-256: `${{ steps.sha256.outputs.hash }}`
+
+            ### Parte del ecosistema
+            - **Disk Surgeon** — recupera datos de USB corruptos
+            - **SectorZero** — gestiona y repara tablas de particiones
+
+            [disksurgeon.infodocencia.net](https://disksurgeon.infodocencia.net) |
+            [infodocencia.net](https://infodocencia.net)
+
+          files: |
+            dist/SectorZero.exe
+            dist/SectorZero.exe.sha256.txt
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
