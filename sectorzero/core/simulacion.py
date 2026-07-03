@@ -334,3 +334,123 @@ def simular_cambiar_flag(
             f"en partición #{numero}"
         ),
     )
+
+
+def simular_redimensionar_particion(
+    resultado_actual,
+    numero: int,
+    nuevo_fin_mb: float,
+) -> ResultadoSimulacion:
+    """Simula redimensionar el FIN de una partición.
+
+    parted resizepart mueve el final de la partición sin tocar los datos.
+    SOLO ES SEGURO si el espacio que se elimina está vacío — parted no
+    verifica esto, solo mueve el puntero de fin en la tabla.
+
+    Para reducir: el espacio al final de la partición debe estar vacío
+    (disco desfragmentado, o partición nueva sin datos al final).
+    Para ampliar: debe haber espacio libre inmediatamente después.
+    """
+    disco = resultado_actual.disco
+    particion = next(
+        (p for p in resultado_actual.particiones_reales if p.numero == numero),
+        None
+    )
+    if not particion:
+        return ResultadoSimulacion(
+            posible=False,
+            motivo_imposible=f"La partición #{numero} no existe.",
+            comando_parted="",
+        )
+
+    nuevo_fin_bytes = int(nuevo_fin_mb * 1e6)
+    tamaño_nuevo = nuevo_fin_bytes - particion.inicio_bytes
+    tamaño_diff = nuevo_fin_bytes - particion.fin_bytes
+
+    if tamaño_nuevo < 1048576:  # 1MB mínimo
+        return ResultadoSimulacion(
+            posible=False,
+            motivo_imposible="El tamaño resultante sería menor de 1MB.",
+            comando_parted="",
+        )
+
+    # Verificar solapamiento con siguiente partición
+    particiones_reales = sorted(resultado_actual.particiones_reales,
+                                  key=lambda p: p.inicio_bytes)
+    idx = next((i for i, p in enumerate(particiones_reales)
+                 if p.numero == numero), None)
+
+    if idx is not None and idx + 1 < len(particiones_reales):
+        sig = particiones_reales[idx + 1]
+        if nuevo_fin_bytes > sig.inicio_bytes:
+            return ResultadoSimulacion(
+                posible=False,
+                motivo_imposible=(
+                    f"El nuevo fin ({nuevo_fin_mb:.0f}MB) solapa con la "
+                    f"partición #{sig.numero} que empieza en {sig.inicio_mb:.0f}MB."
+                ),
+                comando_parted="",
+            )
+
+    # Construir tabla resultante
+    antes = _tabla_a_lineas(resultado_actual)
+    despues = []
+    for l in antes:
+        if l.numero == numero:
+            despues.append(LineaSimulacion(
+                numero=l.numero,
+                inicio_bytes=l.inicio_bytes,
+                fin_bytes=nuevo_fin_bytes,
+                tamaño_bytes=tamaño_nuevo,
+                filesystem=l.filesystem,
+                nombre=l.nombre,
+                flags=l.flags,
+                estado="modificada",
+            ))
+            # Añadir el espacio que queda libre si se redujo
+            if tamaño_diff < 0:
+                despues.append(LineaSimulacion(
+                    numero=None,
+                    inicio_bytes=nuevo_fin_bytes,
+                    fin_bytes=particion.fin_bytes,
+                    tamaño_bytes=abs(tamaño_diff),
+                    filesystem="libre",
+                    nombre="",
+                    flags="",
+                    estado="libre",
+                ))
+        else:
+            despues.append(l)
+
+    advertencias = []
+    if tamaño_diff < 0:
+        advertencias.append(
+            f"REDUCCIÓN de {abs(tamaño_diff)/1e6:.0f}MB. "
+            f"Los datos al final de la partición se perderán si el espacio no está vacío. "
+            f"Asegúrate de que el disco está desfragmentado y el espacio final libre."
+        )
+        advertencias.append(
+            "Después de redimensionar la partición, el sistema de archivos interno "
+            "también debe redimensionarse (resize2fs para ext4, fsck para FAT). "
+            "SectorZero solo mueve el límite en la tabla — NO redimensiona el FS interno."
+        )
+    else:
+        advertencias.append(
+            f"AMPLIACIÓN de {tamaño_diff/1e6:.0f}MB. "
+            f"Después necesitarás redimensionar el sistema de archivos interno "
+            f"para que use el espacio añadido."
+        )
+
+    accion = "Reducir" if tamaño_diff < 0 else "Ampliar"
+    return ResultadoSimulacion(
+        posible=True,
+        advertencias=advertencias,
+        tabla_antes=antes,
+        tabla_despues=despues,
+        comando_parted=f"parted -s {disco.ruta} unit MB resizepart {numero} {nuevo_fin_mb:.2f}",
+        descripcion=(
+            f"{accion} partición #{numero} {particion.filesystem.upper()}: "
+            f"{particion.fin_mb:.0f}MB → {nuevo_fin_mb:.0f}MB "
+            f"({'−' if tamaño_diff < 0 else '+'}{abs(tamaño_diff)/1e6:.0f}MB)"
+        ),
+    )

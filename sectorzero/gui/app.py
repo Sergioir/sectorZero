@@ -307,8 +307,11 @@ class AppSectorZero(tk.Tk):
         self._combo_disco.pack(side=tk.LEFT, padx=PAD_SM)
         self._var_disco.trace_add("write", lambda *a: self._on_disco_cambiado())
 
-        BotonSZ(cab, "↺ Actualizar", comando=self._listar_discos,
+        BotonSZ(cab, "↺ Leer disco", comando=self._recargar_disco,
                  color=AMARILLO, ancho=120).pack(side=tk.LEFT, padx=PAD_SM, pady=PAD_SM)
+
+        BotonSZ(cab, "⟳ Listar", comando=self._listar_discos,
+                 color=GRIS, ancho=80).pack(side=tk.LEFT, padx=(0, PAD_SM), pady=PAD_SM)
 
         BotonSZ(cab, "● Conectar USB", comando=self._conectar_usb,
                  color=AZUL_ELEC, ancho=140).pack(side=tk.LEFT, padx=PAD_SM, pady=PAD_SM)
@@ -465,10 +468,31 @@ class AppSectorZero(tk.Tk):
                                           color=VERDE, ancho=150)
         self._btn_reparar_mbr.pack(side=tk.LEFT, padx=2, pady=PAD_SM)
 
+        self._btn_redimensionar = BotonSZ(frame_ops, "↔ Redimensionar",
+                                           comando=self._op_redimensionar,
+                                           color=AZUL_CLARO, ancho=160)
+        self._btn_redimensionar.pack(side=tk.LEFT, padx=2, pady=PAD_SM)
+
         # Desactivar todo hasta tener disco
         for btn in [self._btn_nueva_tabla, self._btn_nueva_part,
-                     self._btn_eliminar, self._btn_flag, self._btn_reparar_mbr]:
+                     self._btn_eliminar, self._btn_flag,
+                     self._btn_reparar_mbr, self._btn_redimensionar]:
             btn.desactivar()
+
+        # Segunda fila — modo experto separado visualmente
+        frame_experto = tk.Frame(self, bg=BG_OSCURO, height=36)
+        frame_experto.pack(fill=tk.X, padx=PAD, pady=(0, PAD_SM))
+        frame_experto.pack_propagate(False)
+
+        tk.Label(frame_experto,
+                  text="Solo lectura en discos internos.",
+                  bg=BG_OSCURO, fg=GRIS, font=MONO_SM).pack(side=tk.LEFT, padx=PAD_SM)
+
+        self._btn_modo_experto = BotonSZ(frame_experto, "🔓 Modo experto — habilitar edición en disco interno",
+                                          comando=self._activar_modo_experto,
+                                          color=ROJO, ancho=380)
+        self._btn_modo_experto.pack(side=tk.LEFT, padx=PAD_SM, pady=2)
+        self._btn_modo_experto.desactivar()
 
     def _construir_log(self):
         tk.Label(self, text="Log", bg=BG_OSCURO, fg=GRIS, font=MONO_SM).pack(
@@ -565,11 +589,33 @@ class AppSectorZero(tk.Tk):
         label = self._var_disco.get()
         if not label:
             return
-        # Traducir label legible a ruta WSL real
         ruta = getattr(self, "_mapa_discos", {}).get(label, label)
         if ruta and ruta != self._disco_actual:
             self._disco_actual = ruta
-            self._recargar_disco()
+            # Solo leer automáticamente si el disco parece disponible
+            # (evita errores de "No medium found" en discos no conectados a WSL)
+            info = getattr(self, "_mapa_discos_info", {}).get(ruta, {})
+            es_usb = info.get("removible") or info.get("transport") == "usb"
+            if es_usb:
+                # USB: no leer automáticamente, esperar que el usuario pulse Actualizar
+                self._log.escribir(
+                    f"Disco USB seleccionado: {ruta}. "
+                    f"Si no está conectado a WSL, usa '● Conectar USB' primero.", "aviso")
+                self._log.escribir(
+                    "Pulsa '↺ Actualizar' cuando esté conectado.", "gris")
+                self._resultado_actual = None
+                self._lbl_info_disco.config(
+                    text=f"Pendiente de conectar a WSL\n{ruta}", fg=AMARILLO)
+                self._lbl_mbr.config(text="—", fg=GRIS)
+                for w in self._frame_filas.winfo_children():
+                    w.destroy()
+                for btn in [self._btn_nueva_tabla, self._btn_nueva_part,
+                             self._btn_eliminar, self._btn_flag, self._btn_reparar_mbr]:
+                    btn.desactivar()
+                self._lbl_modo.config(text="● USB — conectar a WSL primero", fg=AMARILLO)
+            else:
+                # Disco interno — leer directamente
+                self._recargar_disco()
 
     def _recargar_disco(self):
         if not self._disco_actual:
@@ -619,22 +665,25 @@ class AppSectorZero(tk.Tk):
         self._disco_es_usb = es_usb
 
         if es_usb:
-            # USB externo — operaciones completas
             for btn in [self._btn_nueva_tabla, self._btn_nueva_part,
                          self._btn_flag, self._btn_reparar_mbr]:
                 btn.activar()
             if resultado.particiones_reales:
                 self._btn_eliminar.activar()
+                self._btn_redimensionar.activar()
             self._lbl_modo.config(text="● USB — edición habilitada", fg=VERDE)
             self._log.escribir("Disco USB externo — operaciones habilitadas.", "ok")
         else:
-            # Disco interno — solo lectura
             for btn in [self._btn_nueva_tabla, self._btn_nueva_part,
-                         self._btn_eliminar, self._btn_flag, self._btn_reparar_mbr]:
+                         self._btn_eliminar, self._btn_flag,
+                         self._btn_reparar_mbr, self._btn_redimensionar]:
                 btn.desactivar()
             self._lbl_modo.config(text="● Interno — solo lectura", fg=AMARILLO)
             self._log.escribir(
-                "Disco interno — solo lectura (las operaciones están desactivadas).", "aviso")
+                "Disco interno — solo lectura. Pulsa '🔓 Modo experto' para habilitar operaciones.",
+                "aviso")
+            # Mostrar botón de modo experto
+            self._btn_modo_experto.activar()
 
         n = len(resultado.particiones_reales)
         libre_gb = resultado.espacio_libre_bytes / 1e9
@@ -820,7 +869,95 @@ class AppSectorZero(tk.Tk):
         cmd = f"dd if=/dev/zero of={self._disco_actual} bs=1 count=2 seek=510 conv=notrunc && printf '\\x55\\xAA' | dd of={self._disco_actual} bs=1 seek=510 conv=notrunc"
         self._lanzar_worker(self._worker_op_bash, cmd)
 
-    def _ejecutar_operacion(self, sim):
+    def _activar_modo_experto(self):
+        """Habilita operaciones en discos internos tras triple advertencia."""
+        if not messagebox.askyesno(
+            "⚠ MODO EXPERTO — DISCO INTERNO",
+            f"Vas a habilitar la edición en {self._disco_actual}.\n\n"
+            f"Este es un disco INTERNO del sistema. Modificar su tabla de\n"
+            f"particiones puede hacer que Windows no arranque.\n\n"
+            f"Solo continúa si sabes exactamente lo que haces y tienes\n"
+            f"una copia de seguridad completa del sistema.\n\n"
+            f"¿Confirmas que entiendes el riesgo?",
+            icon="warning"
+        ):
+            return
+        if not messagebox.askyesno(
+            "⚠ SEGUNDA CONFIRMACIÓN",
+            f"Disco: {self._disco_actual}\n\n"
+            f"TODAS las operaciones quedarán habilitadas.\n"
+            f"Un error aquí puede dejar el sistema sin arranque.\n\n"
+            f"¿Continuar?",
+            icon="warning"
+        ):
+            return
+
+        self._disco_es_usb = True  # forzar modo edición
+        self._lbl_modo.config(
+            text=f"⚠ MODO EXPERTO — {self._disco_actual}", fg=ROJO)
+        self._log.escribir(
+            f"⚠ Modo experto activado en {self._disco_actual} — "
+            f"operaciones habilitadas. MÁXIMA PRECAUCIÓN.", "error")
+
+        for btn in [self._btn_nueva_tabla, self._btn_nueva_part,
+                     self._btn_flag, self._btn_reparar_mbr, self._btn_redimensionar]:
+            btn.activar()
+        if self._resultado_actual and self._resultado_actual.particiones_reales:
+            self._btn_eliminar.activar()
+        self._btn_modo_experto.desactivar()
+
+    def _op_redimensionar(self):
+        """Redimensionar el final de una partición (mover fin, no inicio)."""
+        if not self._particion_seleccionada or self._particion_seleccionada.es_libre:
+            self._log.escribir("Selecciona primero una partición.", "aviso")
+            return
+        if not self._resultado_actual or not self._resultado_actual.disco:
+            return
+
+        p = self._particion_seleccionada
+        disco = self._resultado_actual.disco
+        disco_mb = disco.tamaño_bytes / 1e6
+
+        # Calcular espacio libre disponible después de esta partición
+        particiones_reales = sorted(
+            self._resultado_actual.particiones_reales,
+            key=lambda x: x.inicio_bytes
+        )
+        idx = next((i for i, x in enumerate(particiones_reales)
+                     if x.numero == p.numero), None)
+
+        # Límite: hasta la siguiente partición o hasta el fin del disco
+        if idx is not None and idx + 1 < len(particiones_reales):
+            sig = particiones_reales[idx + 1]
+            max_mb = sig.inicio_mb - 1
+        else:
+            max_mb = disco_mb - 1
+
+        min_mb = p.inicio_mb + 1  # al menos 1MB de partición
+
+        self._log.escribir(
+            f"Partición #{p.numero}: actual {p.fin_mb:.0f}MB, "
+            f"rango posible: {min_mb:.0f}MB - {max_mb:.0f}MB", "info")
+
+        nuevo_fin = simpledialog.askfloat(
+            f"Redimensionar partición #{p.numero}",
+            f"Partición: #{p.numero} {p.filesystem.upper()} {p.tamaño_gb:.2f}GB\n"
+            f"Fin actual: {p.fin_mb:.0f} MB\n"
+            f"Rango posible: {min_mb:.0f}MB - {max_mb:.0f}MB\n\n"
+            f"⚠ Solo mueve el FIN de la partición, no los datos.\n"
+            f"Reduce solo si el espacio al final está vacío (desfragmentado).\n\n"
+            f"Nuevo fin (MB):",
+            minvalue=min_mb,
+            maxvalue=max_mb,
+        )
+        if nuevo_fin is None:
+            return
+
+        from sectorzero.core.simulacion import simular_redimensionar_particion
+        from sectorzero.gui.ventana_simulacion import VentanaSimulacion
+        sim = simular_redimensionar_particion(
+            self._resultado_actual, p.numero, nuevo_fin)
+        VentanaSimulacion(self, sim, on_confirmar=self._ejecutar_operacion)
         """Callback que recibe la simulación confirmada y ejecuta el comando real."""
         from sectorzero.core.disco import leer_disco
         self._log.escribir(f"Ejecutando: {sim.comando_parted}", "aviso")

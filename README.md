@@ -93,3 +93,25 @@ python sector_zero.py
 
 Parte del ecosistema [infodocencia.net](https://infodocencia.net) —
 [Disk Surgeon](https://disksurgeon.infodocencia.net)
+
+---
+
+## ⚠ DISCLAIMER
+
+```
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED. USE AT YOUR OWN RISK.
+
+Partition table operations are IRREVERSIBLE. A mistake here can
+render a disk completely unusable and cause permanent data loss.
+
+The authors accept NO responsibility for:
+- Data loss resulting from use of this software
+- System failures caused by partition table modifications
+- Any damage, direct or indirect, arising from use of SectorZero
+
+By using this software you acknowledge that you understand these
+risks and accept full responsibility for the consequences.
+
+ALWAYS have a complete backup before making any changes.
+```
